@@ -1,136 +1,169 @@
 package com.carbontracker.service.impl;
 
-import com.carbontracker.model.*;
-import com.carbontracker.repository.*;
+import com.carbontracker.model.ApiKeyStorage;
+import com.carbontracker.model.EmissionLog;
+import com.carbontracker.model.User;
+import com.carbontracker.repository.ApiKeyStorageRepository;
+import com.carbontracker.repository.EmissionLogRepository;
+import com.carbontracker.repository.UserRepository;
 import com.carbontracker.service.AIAssistantService;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import okhttp3.*;
-import org.springframework.beans.factory.annotation.Autowired;
+import com.carbontracker.util.JwtUtil;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import javax.crypto.Cipher;
-import javax.crypto.spec.SecretKeySpec;
-import java.util.Base64;
-import java.util.List;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.Optional;
 
 @Service
 public class AIAssistantServiceImpl implements AIAssistantService {
 
-    private final EmissionLogRepository emissionLogRepository;
-    private final VehicleTripRepository vehicleTripRepository;
-    private final ElectricityUseRepository electricityUseRepository;
-    private final WasteDisposalRepository wasteDisposalRepository;
-    private final FuelCombustionRepository fuelCombustionRepository;
-    private final ApiKeyStorageRepository apiKeyStorageRepository;
+    private final ApiKeyStorageRepository keyRepo;
+    private final UserRepository userRepo;
+    private final EmissionLogRepository logRepo;
+    private final JwtUtil jwtUtil;
 
-    private final String secretKey;
+    @Value("${encryption.secret:}")
+    private String secret; // available if you later add encryption
 
-    @Autowired
-    public AIAssistantServiceImpl(EmissionLogRepository emissionLogRepository,
-                                  VehicleTripRepository vehicleTripRepository,
-                                  ElectricityUseRepository electricityUseRepository,
-                                  WasteDisposalRepository wasteDisposalRepository,
-                                  FuelCombustionRepository fuelCombustionRepository,
-                                  ApiKeyStorageRepository apiKeyStorageRepository,
-                                  @Value("${encryption.secret}") String secretKey) {
-        this.emissionLogRepository = emissionLogRepository;
-        this.vehicleTripRepository = vehicleTripRepository;
-        this.electricityUseRepository = electricityUseRepository;
-        this.wasteDisposalRepository = wasteDisposalRepository;
-        this.fuelCombustionRepository = fuelCombustionRepository;
-        this.apiKeyStorageRepository = apiKeyStorageRepository;
-        this.secretKey = secretKey;
+    public AIAssistantServiceImpl(ApiKeyStorageRepository keyRepo,
+                                  UserRepository userRepo,
+                                  EmissionLogRepository logRepo,
+                                  JwtUtil jwtUtil) {
+        this.keyRepo = keyRepo;
+        this.userRepo = userRepo;
+        this.logRepo = logRepo;
+        this.jwtUtil = jwtUtil;
+    }
+
+    // --- key management ---
+
+    @Override
+    public boolean hasKey() {
+        return keyRepo.findFirst().map(k -> k.getApiKey() != null && !k.getApiKey().isBlank()).orElse(false);
     }
 
     @Override
-    public void setApiKey(String apiKey) {
-        String encrypted = encrypt(apiKey);
-        ApiKeyStorage record = apiKeyStorageRepository.findByName("openai")
-                .orElse(new ApiKeyStorage());
-        record.setName("openai");
-        record.setEncryptedKey(encrypted);
-        apiKeyStorageRepository.save(record);
+    public String maskedKey() {
+        return keyRepo.findFirst().map(k -> {
+            String v = k.getApiKey();
+            if (v == null || v.length() < 8) return null;
+            return v.substring(0, 4) + "…" + v.substring(v.length() - 4);
+        }).orElse(null);
     }
 
     @Override
-    public String getMaskedApiKey() {
-        return apiKeyStorageRepository.findByName("openai")
-                .map(ApiKeyStorage::getEncryptedKey)
-                .map(this::decrypt)
-                .map(key -> key.length() > 4 ? "************" + key.substring(key.length() - 4) : "")
-                .orElse("");
-    }
-
-    private String getDecryptedKey() {
-        return apiKeyStorageRepository.findByName("openai")
-                .map(ApiKeyStorage::getEncryptedKey)
-                .map(this::decrypt)
-                .orElseThrow(() -> new RuntimeException("API key not set"));
+    public void storeKey(String apiKeyPlaintext) {
+        ApiKeyStorage row = keyRepo.findFirst().orElseGet(ApiKeyStorage::new);
+        // If you want, encrypt here with `secret`
+        row.setApiKey(apiKeyPlaintext);
+        keyRepo.save(row);
     }
 
     @Override
-    public String generateSuggestions(Long logId) {
-        String apiKey = getDecryptedKey();
+    public void deleteKey() {
+        keyRepo.deleteAll();
+    }
 
-        EmissionLog log = emissionLogRepository.findById(logId).orElseThrow();
-        List<VehicleTrip> trips = vehicleTripRepository.findByEmissionLogId(logId);
-        List<ElectricityUse> electricity = electricityUseRepository.findByEmissionLogId(logId);
-        List<WasteDisposal> waste = wasteDisposalRepository.findByEmissionLogId(logId);
-        List<FuelCombustion> fuel = fuelCombustionRepository.findByEmissionLogId(logId);
+    // --- auth utility ---
 
-        String prompt = "Based on the following carbon emission log, give advice to reduce emissions:\n" +
-                "Total emissions: " + log.getTotalEmissionsKg() + " kg\n" +
-                "Trips: " + trips.size() + ", Electricity: " + electricity.size() + ", Waste: " + waste.size() + ", Fuel: " + fuel.size();
+    @Override
+    public String emailFromJwt(String jwt) {
+        return jwtUtil.validateToken(jwt); // returns email or null
+    }
+
+    // --- suggestions ---
+
+    @Override
+    public String generateSuggestionsForLog(String requesterEmail, Long logId) {
+        // 1) resolve user + log
+        User user = userRepo.findByEmail(requesterEmail)
+                .orElseThrow(() -> new IllegalStateException("User not found"));
+
+        EmissionLog log = logRepo.findById(logId)
+                .orElseThrow(() -> new IllegalStateException("Log not found"));
+
+        // If not admin, ensure ownership
+        if (!"admin@carbontracker.com".equalsIgnoreCase(requesterEmail)) {
+            if (log.getUser() == null || !log.getUser().getId().equals(user.getId())) {
+                throw new IllegalStateException("Forbidden");
+            }
+        }
+
+        // 2) build prompt
+        String prompt = buildPrompt(log);
+
+        // 3) call OpenAI
+        String apiKey = keyRepo.findFirst()
+                .map(ApiKeyStorage::getApiKey)
+                .orElseThrow(() -> new IllegalStateException("OpenAI API key is not set"));
 
         try {
-            OkHttpClient client = new OkHttpClient();
-            MediaType mediaType = MediaType.parse("application/json");
-            String body = new ObjectMapper().writeValueAsString(new Object() {
-                public final String model = "gpt-3.5-turbo";
-                public final Object[] messages = new Object[]{
-                        new Object() {
-                            public final String role = "user";
-                            public final String content = prompt;
-                        }
-                };
-            });
-            Request request = new Request.Builder()
-                    .url("https://api.openai.com/v1/chat/completions")
-                    .post(RequestBody.create(body, mediaType))
-                    .addHeader("Authorization", "Bearer " + apiKey)
-                    .addHeader("Content-Type", "application/json")
+            String model = "gpt-4o-mini"; // cheaper & good enough for tips
+            String requestJson = """
+              {
+                "model": "%s",
+                "messages": [
+                  {"role":"system","content":"You are a sustainability coach. Be concise, actionable, and numeric where possible."},
+                  {"role":"user","content": %s }
+                ],
+                "temperature": 0.2
+              }
+            """.formatted(model, jsonEscape(prompt));
+
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create("https://api.openai.com/v1/chat/completions"))
+                    .timeout(Duration.ofSeconds(40))
+                    .header("Authorization", "Bearer " + apiKey)
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(requestJson, StandardCharsets.UTF_8))
                     .build();
 
-            Response response = client.newCall(request).execute();
-            if (!response.isSuccessful()) throw new RuntimeException("OpenAI API error");
+            HttpClient client = HttpClient.newHttpClient();
+            HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() / 100 != 2) {
+                throw new IllegalStateException("OpenAI error " + resp.statusCode() + ": " + resp.body());
+            }
 
-            return response.body().string();
+            // naive parse to pull out content (avoid Gson dependency here)
+            String body = resp.body();
+            String marker = "\"content\":\"";
+            int start = body.indexOf(marker);
+            if (start >= 0) {
+                start += marker.length();
+                int end = body.indexOf("\"", start);
+                if (end > start) {
+                    return body.substring(start, end)
+                            .replace("\\n", "\n")
+                            .replace("\\\"", "\"");
+                }
+            }
+            // fallback: return full JSON
+            return body;
+
         } catch (Exception e) {
-            e.printStackTrace();
-            return "Error while contacting AI service.";
+            throw new IllegalStateException("Failed to call OpenAI: " + e.getMessage(), e);
         }
     }
 
-    private String encrypt(String strToEncrypt) {
-        try {
-            SecretKeySpec secretKeySpec = new SecretKeySpec(secretKey.getBytes(), "AES");
-            Cipher cipher = Cipher.getInstance("AES");
-            cipher.init(Cipher.ENCRYPT_MODE, secretKeySpec);
-            return Base64.getEncoder().encodeToString(cipher.doFinal(strToEncrypt.getBytes("UTF-8")));
-        } catch (Exception e) {
-            throw new RuntimeException("Error encrypting", e);
-        }
+    private String buildPrompt(EmissionLog log) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Give concise, practical suggestions to reduce CO2e for this daily log.\n");
+        sb.append("Total emissions (kg CO2e): ").append(log.getTotalEmissionsKg()).append("\n");
+        if (log.getCategory() != null) sb.append("Category: ").append(log.getCategory()).append("\n");
+        if (log.getDescription() != null) sb.append("Details: ").append(log.getDescription()).append("\n");
+        sb.append("Limit to 6 bullets. Prioritize the largest-impact ideas first.\n");
+        return sb.toString();
     }
 
-    private String decrypt(String strToDecrypt) {
-        try {
-            SecretKeySpec secretKeySpec = new SecretKeySpec(secretKey.getBytes(), "AES");
-            Cipher cipher = Cipher.getInstance("AES");
-            cipher.init(Cipher.DECRYPT_MODE, secretKeySpec);
-            return new String(cipher.doFinal(Base64.getDecoder().decode(strToDecrypt)));
-        } catch (Exception e) {
-            throw new RuntimeException("Error decrypting", e);
-        }
+    private static String jsonEscape(String s) {
+        String q = s.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n");
+        return "\"" + q + "\"";
     }
 }

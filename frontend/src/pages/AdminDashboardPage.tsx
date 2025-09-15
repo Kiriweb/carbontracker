@@ -3,7 +3,6 @@ import { useNavigate } from "react-router-dom";
 import QuickEntryForm from "../components/QuickEntryForm";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
-// Match your seeded admin email from SQL:
 const ADMIN_EMAIL = "admin@carbontracker.com";
 
 type UserLite = { id: number; email: string; enabled?: boolean };
@@ -154,7 +153,7 @@ export default function AdminDashboardPage() {
                   <td className="p-2">{u.email}</td>
                   <td className="p-2">{u.enabled ? "Yes" : "No"}</td>
                   <td className="p-2">
-                    {u.email !== ADMIN_EMAIL && (
+                    {u.email !== "admin@carbontracker.com" && (
                       <button
                         className="bg-red-600 text-white px-3 py-1 rounded"
                         onClick={() => deleteUser(u.id)}
