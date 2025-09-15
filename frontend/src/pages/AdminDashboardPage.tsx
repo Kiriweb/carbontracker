@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import QuickEntryForm from "../components/QuickEntryForm";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
 // Match your seeded admin email from SQL:
@@ -167,6 +168,31 @@ export default function AdminDashboardPage() {
             </tbody>
           </table>
         )}
+      </section>
+
+      {/* Quick Entry */}
+      <section>
+        <h2 className="text-xl font-semibold mb-2">Quick Entry</h2>
+        <QuickEntryForm
+          onSaved={(dto) => {
+            const newRow: EmissionLog = {
+              id: dto.id,
+              totalEmissionsKg: Number(dto.totalEmissionsKg ?? dto.co2e ?? 0),
+              date: dto.date,
+              createdAt: dto.createdAt,
+              category: dto.category,
+              description: dto.description,
+              co2e: Number(dto.co2e ?? dto.totalEmissionsKg ?? 0),
+            };
+            setLogs((prev) => [newRow, ...prev]);
+
+            // (Optional) also refetch to stay canonical
+            // fetch(`${API_BASE}/api/logs`, { credentials: "include" })
+            //   .then((r) => (r.ok ? r.json() : Promise.reject()))
+            //   .then((data) => setLogs(data))
+            //   .catch(() => {});
+          }}
+        />
       </section>
 
       {/* Admin emissions + AI */}

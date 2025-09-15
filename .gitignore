@@ -1,5 +1,6 @@
 ### Backup ###
 *.bak
+*.zip
 
 ### IntelliJ IDEA ###
 out/
