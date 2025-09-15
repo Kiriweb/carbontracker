@@ -1,0 +1,32 @@
+{
+  "electricity_per_country": {
+    "Austria": 0.155,
+    "Belgium": 0.267,
+    "Bulgaria": 0.487,
+    "Croatia": 0.283,
+    "Cyprus": 0.848,
+    "Czechia": 0.679,
+    "Denmark": 0.487,
+    "Estonia": 1.074,
+    "Finland": 0.158,
+    "France": 0.072,
+    "Germany": 0.551,
+    "Greece": 0.974,
+    "Hungary": 0.447,
+	"Ireland": 0.674,
+    "Italy": 0.396,
+    "Latvia": 0.117,
+    "Lithuania": 0.093,
+    "Luxembourg": 0.092,
+    "Malta": 0.838,
+    "Netherlands": 0.492,
+    "Poland": 0.917,
+    "Portugal": 0.483,
+    "Romania": 0.46,
+    "Slovakia": 0.21,
+    "Slovenia": 0.354,
+    "Spain": 0.462,
+    "Sweden": 0.017
+  },
+  "electricity_default": 0.446
+}

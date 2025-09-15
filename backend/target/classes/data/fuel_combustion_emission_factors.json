@@ -1,0 +1,30 @@
+{
+  "fuel_combustion_factors": {
+    "butane_kwh": 0.24107,
+    "butane_litre": 1.74533,
+    "cng_kwh": 0.2027,
+    "cng_litre": 0.4507,
+    "lng_kwh": 0.20489,
+    "lng_litre": 1.17797,
+    "lpg_kwh": 0.23032,
+    "lpg_litre": 1.55713,
+    "natural_gas_kwh": 0.2027,
+    "natural_gas_cubic_meter": 2.06672,
+    "natural_gas_100mineral_kwh": 0.20489,
+    "natural_gas_100mineral_cubic_meter": 2.08906,
+    "propane_kwh": 0.23258,
+    "propane_litre": 1.54358,
+    "burning_oil_kwh": 0.25975,
+    "burning_oil_litre": 2.54016,
+    "diesel_kwh": 0.25953,
+    "diesel_litre": 2.57082,
+    "fuel_oil_kwh": 0.28523,
+    "fuel_oil_litre": 3.17492,
+    "gas_oil_kwh": 0.27288,
+    "gas_oil_litre": 2.75541,
+    "waste_oil_kwh": 0.27459,
+    "waste_oil_litre": 2.74924,
+    "coal_domestic_kwh": 0.36549,
+    "coal_domestic_tonne": 2904.95234
+  }
+}
