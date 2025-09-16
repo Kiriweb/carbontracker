@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { saveQuickEntry } from "../lib/quickApi";
 import type { QuickPayload } from "../lib/quickApi";
 import {
@@ -14,13 +14,63 @@ import {
 
 type Props = { onSaved: (logDto: any) => void };
 
+/**
+ * Waste methods allowed for each type — must match your JSON keys:
+ * "type_method" (lowercase, underscore). This prevents invalid combos
+ * that would otherwise yield 0 because the factor doesn't exist.
+ */
+const WASTE_METHODS_BY_TYPE: Record<string, string[]> = {
+  aggregates: ["open_loop", "closed_loop", "landfill"],
+  average_construction: ["open_loop", "closed_loop", "incineration"],
+  asbestos: ["landfill"],
+  asphalt: ["open_loop", "closed_loop", "landfill"],
+  bricks: ["open_loop", "landfill"],
+  concrete: ["open_loop", "closed_loop", "landfill"],
+  insulation: ["closed_loop", "landfill"],
+  metals: ["closed_loop", "landfill"],
+  soils: ["closed_loop", "landfill"],
+  mineral_oil: ["closed_loop", "incineration"],
+  plasterboard: ["closed_loop", "landfill"],
+  tyres: ["closed_loop"],
+  wood: ["closed_loop", "incineration", "composting", "landfill"],
+  books: ["closed_loop", "incineration", "composting", "landfill"],
+  glass: ["open_loop", "closed_loop", "incineration", "landfill"],
+  clothing: ["closed_loop", "incineration", "landfill"],
+  household_residual_waste: ["incineration", "landfill"],
+  organic_food_drink: ["incineration", "composting", "landfill", "anaerobic_digestion"],
+  organic_garden: ["incineration", "composting", "landfill", "anaerobic_digestion"],
+  organic_mixed_food_garden: ["incineration", "composting", "landfill", "anaerobic_digestion"],
+  commercial_industrial_waste: ["incineration", "landfill"],
+  weee_fridges: ["open_loop", "landfill"],
+  weee_large: ["open_loop", "incineration", "landfill"],
+  weee_mixed: ["open_loop", "incineration", "landfill"],
+  weee_small: ["open_loop", "incineration", "landfill"],
+  batteries: ["open_loop", "landfill"],
+  metal_aluminium_cans: ["open_loop", "closed_loop", "incineration", "landfill"],
+  metal_mixed_cans: ["open_loop", "closed_loop", "incineration", "landfill"],
+  metal_scrap: ["open_loop", "closed_loop", "incineration", "landfill"],
+  metal_steel_cans: ["open_loop", "closed_loop", "incineration", "landfill"],
+  plastics_average: ["open_loop", "closed_loop", "incineration", "landfill"],
+  plastics_film: ["open_loop", "closed_loop", "incineration", "landfill"],
+  plastics_rigid: ["open_loop", "closed_loop", "incineration", "landfill"],
+  plastics_hdpe: ["open_loop", "closed_loop", "incineration", "landfill"],
+  plastics_ldpe: ["open_loop", "closed_loop", "incineration", "landfill"],
+  plastics_pet: ["open_loop", "closed_loop", "incineration", "landfill"],
+  plastics_pp: ["open_loop", "closed_loop", "incineration", "landfill"],
+  plastics_ps: ["open_loop", "closed_loop", "incineration", "landfill"],
+  plastics_pvc: ["open_loop", "closed_loop", "incineration", "landfill"],
+  paper_board: ["closed_loop", "incineration", "composting", "landfill"],
+  paper_mixed: ["closed_loop", "incineration", "composting", "landfill"],
+  paper_paper: ["closed_loop", "incineration", "composting", "landfill"],
+};
+
 export default function QuickEntryForm({ onSaved }: Props) {
   const [category, setCategory] =
     useState<QuickPayload["category"]>("electricity use");
 
   // vehicle
-  const [vehicleType, setVehicleType] = useState<typeof VEHICLE_TYPES[number] | "">("");
-  const [vehicleFuel, setVehicleFuel] = useState<typeof VEHICLE_FUELS[number] | "">("");
+  const [vehicleType, setVehicleType] = useState<(typeof VEHICLE_TYPES)[number] | "">("");
+  const [vehicleFuel, setVehicleFuel] = useState<(typeof VEHICLE_FUELS)[number] | "">("");
   const [distanceKm, setDistanceKm] = useState<number | "">("");
 
   // electricity
@@ -39,6 +89,12 @@ export default function QuickEntryForm({ onSaved }: Props) {
 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Methods available for the currently selected waste type
+  const availableWasteMethods = useMemo(() => {
+    if (!wasteType) return WASTE_METHODS;
+    return WASTE_METHODS_BY_TYPE[wasteType] ?? [];
+  }, [wasteType]);
 
   function buildPayload(): QuickPayload {
     switch (category) {
@@ -84,8 +140,13 @@ export default function QuickEntryForm({ onSaved }: Props) {
       if (category === "electricity use" && !electricityCountry) {
         throw new Error("Please select a country.");
       }
-      if (category === "waste disposal" && (!wasteType || !wasteMethod)) {
-        throw new Error("Please select waste type and method.");
+      if (category === "waste disposal") {
+        if (!wasteType) throw new Error("Please select waste type.");
+        if (!wasteMethod) throw new Error("Please select waste method.");
+        // block invalid combos client-side too
+        if (!availableWasteMethods.includes(wasteMethod)) {
+          throw new Error("Selected method is not valid for this waste type.");
+        }
       }
       if (category === "fuel combustion" && (!fuelType || !fuelUnit)) {
         throw new Error("Please select fuel type and unit.");
@@ -114,7 +175,13 @@ export default function QuickEntryForm({ onSaved }: Props) {
         <select
           className="border rounded p-1"
           value={category}
-          onChange={(e) => setCategory(e.target.value as QuickPayload["category"])}
+          onChange={(e) => {
+            setCategory(e.target.value as QuickPayload["category"]);
+            // reset per-category fields to avoid stale data
+            setVehicleType(""); setVehicleFuel(""); setDistanceKm("");
+            setKwh(""); setWasteType(""); setWasteMethod(""); setWasteKg("");
+            setFuelType(""); setFuelUnit(""); setFuelQuantity("");
+          }}
         >
           <option>electricity use</option>
           <option>vehicle trip</option>
@@ -129,7 +196,7 @@ export default function QuickEntryForm({ onSaved }: Props) {
           <select
             className="border rounded p-2"
             value={vehicleType}
-            onChange={(e) => setVehicleType(e.target.value as typeof VEHICLE_TYPES[number])}
+            onChange={(e) => setVehicleType(e.target.value as (typeof VEHICLE_TYPES)[number])}
           >
             <option value="">Select vehicle type…</option>
             {VEHICLE_TYPES.map((v) => (
@@ -140,7 +207,7 @@ export default function QuickEntryForm({ onSaved }: Props) {
           <select
             className="border rounded p-2"
             value={vehicleFuel}
-            onChange={(e) => setVehicleFuel(e.target.value as typeof VEHICLE_FUELS[number])}
+            onChange={(e) => setVehicleFuel(e.target.value as (typeof VEHICLE_FUELS)[number])}
           >
             <option value="">Select fuel…</option>
             {VEHICLE_FUELS.map((f) => (
@@ -189,7 +256,10 @@ export default function QuickEntryForm({ onSaved }: Props) {
           <select
             className="border rounded p-2"
             value={wasteType}
-            onChange={(e) => setWasteType(e.target.value)}
+            onChange={(e) => {
+              setWasteType(e.target.value);
+              setWasteMethod(""); // clear method when type changes
+            }}
           >
             <option value="">Select waste type…</option>
             {WASTE_TYPES.map((t) => (
@@ -201,9 +271,10 @@ export default function QuickEntryForm({ onSaved }: Props) {
             className="border rounded p-2"
             value={wasteMethod}
             onChange={(e) => setWasteMethod(e.target.value)}
+            disabled={!wasteType}
           >
-            <option value="">Select method…</option>
-            {WASTE_METHODS.map((m) => (
+            <option value="">{wasteType ? "Select method…" : "Select type first…"}</option>
+            {(wasteType ? availableWasteMethods : WASTE_METHODS).map((m) => (
               <option key={m} value={m}>{labelize(m)}</option>
             ))}
           </select>

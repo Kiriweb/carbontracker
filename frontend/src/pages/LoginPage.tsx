@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-const ADMIN_EMAIL = "admin@carbontrackerapp.com";
+const ADMIN_EMAIL = "admin@carbontracker.com";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");

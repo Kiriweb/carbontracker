@@ -1,15 +1,9 @@
 package com.carbontracker.service;
 
 public interface AIAssistantService {
-    // key management
-    boolean hasKey();
-    String maskedKey();
-    void storeKey(String apiKeyPlaintext);
-    void deleteKey();
+    void setApiKey(String key);
+    String getMaskedApiKey();
 
-    // auth utility
-    String emailFromJwt(String jwt);
-
-    // suggestions
-    String generateSuggestionsForLog(String requesterEmail, Long logId);
+    /** Generate natural language suggestions for a given log id. */
+    String generateSuggestions(Long logId);
 }

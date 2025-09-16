@@ -1,6 +1,7 @@
 package com.carbontracker.util;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.springframework.stereotype.Component;
@@ -9,6 +10,10 @@ import java.io.InputStream;
 import java.math.BigDecimal;
 import java.util.*;
 
+/**
+ * Central calculator that loads all factor datasets from classpath resources and
+ * provides methods to compute CO2e. All keys are normalized to lowercase with underscores.
+ */
 @Component
 public class EmissionCalculatorImpl implements EmissionCalculator {
 
@@ -19,14 +24,13 @@ public class EmissionCalculatorImpl implements EmissionCalculator {
 
     private final ObjectMapper mapper = new ObjectMapper();
 
-    // Internal stores
     /** key: "<vehicle>_<fuel>" in lower-case */
     private final Map<String, Double> vehicleFactors = new HashMap<>();
-    /** key: country code in UPPER-CASE + "ELECTRICITY_DEFAULT" */
+    /** key: country code in UPPER-CASE; plus ELECTRICITY_DEFAULT */
     private final Map<String, Double> electricityFactors = new HashMap<>();
-    /** outer: waste type (lower), inner: method (lower) */
-    private final Map<String, Map<String, Double>> wasteFactors = new HashMap<>();
-    /** key: "<fuel>_<unit>" in lower-case */
+    /** key: "<wasteType>_<method>" in lower-case (e.g., "clothing_landfill") */
+    private final Map<String, Double> wasteFactors = new HashMap<>();
+    /** key: "<fuel>_<unit>" in lower-case (e.g., "diesel_litre") */
     private final Map<String, Double> fuelFactors = new HashMap<>();
 
     @PostConstruct
@@ -47,13 +51,12 @@ public class EmissionCalculatorImpl implements EmissionCalculator {
         try (InputStream is = openClasspath(VEHICLE_FACTORS_PATH)) {
             Map<String, Number> json = mapper.readValue(is, new TypeReference<Map<String, Number>>() {});
             json.forEach((k, v) -> vehicleFactors.put(
-                    k == null ? null : k.toLowerCase(),
+                    k == null ? "" : k.toLowerCase(),
                     v == null ? 0.0 : v.doubleValue()
             ));
         }
     }
 
-    @SuppressWarnings("unchecked")
     private void loadElectricityFactors() throws Exception {
         try (InputStream is = openClasspath(ELECTRICITY_FACTORS_PATH)) {
             Map<String, Object> json = mapper.readValue(is, new TypeReference<Map<String, Object>>() {});
@@ -62,7 +65,7 @@ public class EmissionCalculatorImpl implements EmissionCalculator {
                 for (Map.Entry<?, ?> e : perCountry.entrySet()) {
                     String cc = e.getKey() == null ? "" : e.getKey().toString().toUpperCase();
                     Number n = coerceNumber(e.getValue());
-                    electricityFactors.put(cc, n.doubleValue());
+                    electricityFactors.put(cc, n == null ? 0.0 : n.doubleValue());
                 }
             }
             Number def = coerceNumber(json.get("electricity_default"));
@@ -70,36 +73,31 @@ public class EmissionCalculatorImpl implements EmissionCalculator {
         }
     }
 
+    /**
+     * Your JSON is flat under "waste_disposal_factors", e.g.:
+     * { "clothing_landfill": 496.78, "paper_board_composting": 8.98, ... }
+     * We load that inner object directly as a flat map.
+     */
     private void loadWasteFactors() throws Exception {
         try (InputStream is = openClasspath(WASTE_FACTORS_PATH)) {
-            Map<String, Object> json = mapper.readValue(is, new TypeReference<Map<String, Object>>() {});
-            Object wasteData = json.get("waste_disposal_factors");
-            if (wasteData instanceof Map<?, ?> wasteMap) {
-                for (Map.Entry<?, ?> entry : wasteMap.entrySet()) {
-                    String type = entry.getKey() == null ? "" : entry.getKey().toString().toLowerCase();
-                    Object value = entry.getValue();
-
-                    Map<String, Double> methodMap = new HashMap<>();
-                    if (value instanceof Map<?, ?> subMap) {
-                        for (Map.Entry<?, ?> subEntry : subMap.entrySet()) {
-                            String method = subEntry.getKey() == null ? "" : subEntry.getKey().toString().toLowerCase();
-                            Number n = coerceNumber(subEntry.getValue());
-                            methodMap.put(method, n == null ? 0.0 : n.doubleValue());
-                        }
-                    } else {
-                        // single number -> store under "default"
-                        Number n = coerceNumber(value);
-                        methodMap.put("default", n == null ? 0.0 : n.doubleValue());
-                    }
-                    wasteFactors.put(type, methodMap);
+            JsonNode root = mapper.readTree(is);
+            JsonNode inner = root.get("waste_disposal_factors");
+            if (inner != null && inner.isObject()) {
+                Iterator<Map.Entry<String, JsonNode>> it = inner.fields();
+                while (it.hasNext()) {
+                    Map.Entry<String, JsonNode> e = it.next();
+                    String key = normalizeKey(e.getKey()); // defensive normalization
+                    double val = e.getValue().asDouble(0.0);
+                    wasteFactors.put(key, val);
                 }
+            } else {
+                throw new IllegalStateException("Missing object 'waste_disposal_factors' in " + WASTE_FACTORS_PATH);
             }
         }
     }
 
     private void loadFuelFactors() throws Exception {
         try (InputStream is = openClasspath(FUEL_FACTORS_PATH)) {
-            // Read as a generic map first so we can detect the shape
             Map<String, Object> root = mapper.readValue(is, new TypeReference<Map<String, Object>>() {});
             Object payload = root.containsKey("fuel_combustion_factors") ? root.get("fuel_combustion_factors") : root;
 
@@ -108,16 +106,13 @@ public class EmissionCalculatorImpl implements EmissionCalculator {
             }
 
             for (Map.Entry<?, ?> e : map.entrySet()) {
-                String key = e.getKey().toString().toLowerCase();  // normalize
-                Object val = e.getValue();
-                if (!(val instanceof Number num)) {
+                String key = normalizeKey(String.valueOf(e.getKey()));
+                Number num = coerceNumber(e.getValue());
+                if (num == null) {
                     throw new IllegalStateException("Non-numeric value for fuel factor '" + key + "'.");
                 }
                 fuelFactors.put(key, num.doubleValue());
             }
-
-            org.slf4j.LoggerFactory.getLogger(EmissionCalculatorImpl.class)
-                    .info("Loaded {} fuel factors.", fuelFactors.size());
         }
     }
 
@@ -141,11 +136,19 @@ public class EmissionCalculatorImpl implements EmissionCalculator {
         return null;
     }
 
+    /** normalize to lowercase with underscores; collapse non [a-z0-9] to '_' and trim leading/trailing underscores */
+    private String normalizeKey(String raw) {
+        if (raw == null) return "";
+        return raw.toLowerCase()
+                .replaceAll("[^a-z0-9]+", "_")
+                .replaceAll("^_|_$", "");
+    }
+
     // ---------- API (calculations) ----------
 
     @Override
     public double calculateVehicleEmissions(String vehicleType, String fuelType, double distanceKm) {
-        String key = (vehicleType + "_" + fuelType).toLowerCase();
+        String key = normalizeKey(vehicleType + "_" + fuelType);
         double factor = vehicleFactors.getOrDefault(key, 0.0);
         return factor * distanceKm;
     }
@@ -158,19 +161,30 @@ public class EmissionCalculatorImpl implements EmissionCalculator {
         return factor * kwh;
     }
 
+    /**
+     * Waste factors are per tonne; payload weight is in kg.
+     * We build "<type>_<method>" (lowercase, underscored) to look up the factor.
+     */
     @Override
     public double calculateWasteEmissions(String wasteType, String method, double weightKg) {
-        String wt = wasteType == null ? "" : wasteType.toLowerCase();
-        String m = method == null ? "" : method.toLowerCase();
-        Map<String, Double> methods = wasteFactors.getOrDefault(wt, Map.of());
-        double factor = methods.getOrDefault(m, methods.getOrDefault("default", 0.0));
-        // Assuming factors are in kg CO2e per tonne -> convert kg to tonnes:
-        return factor * (weightKg / 1000.0);
+        if (weightKg <= 0) return 0.0;
+
+        String key = normalizeKey(
+                (wasteType == null ? "" : wasteType) + "_" + (method == null ? "" : method)
+        );
+
+        Double perTonne = wasteFactors.get(key);
+        if (perTonne == null) {
+            // Optional: log warn here if you have a logger
+            // LoggerFactory.getLogger(getClass()).warn("Missing waste factor for key: {}", key);
+            return 0.0;
+        }
+        return perTonne * (weightKg / 1000.0);
     }
 
     @Override
     public double calculateFuelEmissions(String fuelType, String unit, double quantity) {
-        String key = (fuelType + "_" + unit).toLowerCase();
+        String key = normalizeKey(fuelType + "_" + unit);
         double factor = fuelFactors.getOrDefault(key, 0.0);
         return factor * quantity;
     }
@@ -196,13 +210,26 @@ public class EmissionCalculatorImpl implements EmissionCalculator {
         return Collections.unmodifiableList(list);
     }
 
+    /**
+     * Reconstruct waste types and supported methods from the flat keys:
+     * split at the last underscore → left = type, right = method.
+     * (Types may contain underscores, e.g. "household_residual_waste".)
+     */
     @Override
     public Map<String, List<String>> getWasteTypesWithMethods() {
-        Map<String, List<String>> out = new HashMap<>();
-        for (Map.Entry<String, Map<String, Double>> entry : wasteFactors.entrySet()) {
-            List<String> methods = new ArrayList<>(entry.getValue().keySet());
-            Collections.sort(methods);
-            out.put(entry.getKey(), Collections.unmodifiableList(methods));
+        Map<String, Set<String>> tmp = new HashMap<>();
+
+        for (String flat : wasteFactors.keySet()) {
+            int idx = flat.lastIndexOf('_');
+            if (idx <= 0 || idx >= flat.length() - 1) continue; // skip malformed
+            String type = flat.substring(0, idx);
+            String method = flat.substring(idx + 1);
+            tmp.computeIfAbsent(type, k -> new TreeSet<>()).add(method);
+        }
+
+        Map<String, List<String>> out = new TreeMap<>();
+        for (Map.Entry<String, Set<String>> e : tmp.entrySet()) {
+            out.put(e.getKey(), new ArrayList<>(e.getValue()));
         }
         return Collections.unmodifiableMap(out);
     }
